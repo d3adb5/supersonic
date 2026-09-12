@@ -1,6 +1,11 @@
 package dlna
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"github.com/supersonic-app/supersonic/backend/mediaprovider"
+)
 
 // The current and the next track each put a stream and a cover art URL
 // into the proxy. All four have to stay reachable: if the current track's
@@ -51,5 +56,67 @@ func TestProxyEvictsLeastRecentlyUsed(t *testing.T) {
 	}
 	if _, ok := d.lookupProxyURL(oldest); ok {
 		t.Error("expected the least recently used entry to be evicted")
+	}
+}
+
+// onTrackChange wires the player up so that a firing of the track change
+// timer is observable without a renderer: with a next track queued, the
+// change is reported through the OnTrackChange callback.
+func onTrackChange(d *DLNAPlayer) <-chan struct{} {
+	fired := make(chan struct{}, 1)
+	d.nextTrackMeta = mediaprovider.MediaItemMetadata{ID: "next", Duration: time.Hour}
+	d.OnTrackChange(func() { fired <- struct{}{} })
+	return fired
+}
+
+func TestTrackChangeTimerFires(t *testing.T) {
+	d := &DLNAPlayer{}
+	fired := onTrackChange(d)
+	d.setTrackChangeTimer(10 * time.Millisecond)
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("track change timer never fired")
+	}
+}
+
+func TestTrackChangeTimerCancelAndReschedule(t *testing.T) {
+	d := &DLNAPlayer{}
+	fired := onTrackChange(d)
+
+	d.setTrackChangeTimer(10 * time.Millisecond)
+	d.setTrackChangeTimer(0)
+	select {
+	case <-fired:
+		t.Fatal("cancelled track change timer fired")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	d.setTrackChangeTimer(10 * time.Millisecond)
+	d.setTrackChangeTimer(time.Hour)
+	select {
+	case <-fired:
+		t.Fatal("rescheduled track change timer fired on its old schedule")
+	case <-time.After(50 * time.Millisecond):
+	}
+	d.setTrackChangeTimer(0)
+}
+
+// A pause that lands just as the timer fires must win. The timer can no
+// longer be stopped at that point, so its firing arrives after the cancel
+// and has to be recognized as stale.
+func TestTrackChangeTimerFiringLosesToCancel(t *testing.T) {
+	d := &DLNAPlayer{}
+	fired := onTrackChange(d)
+
+	d.setTrackChangeTimer(time.Hour)
+	gen := d.timerGen
+	d.setTrackChangeTimer(0)
+	d.trackChangeTimerFired(gen)
+
+	select {
+	case <-fired:
+		t.Fatal("a cancelled firing still changed the track")
+	case <-time.After(50 * time.Millisecond):
 	}
 }

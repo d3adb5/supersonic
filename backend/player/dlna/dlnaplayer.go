@@ -95,9 +95,12 @@ type DLNAPlayer struct {
 	failedToSetNext    bool
 	unsetNextMediaItem *avtransport.MediaItem
 
-	timerActive atomic.Bool
-	timer       *time.Timer
-	resetChan   chan (time.Duration)
+	// timer fires handleOnTrackChange when the current track is due to
+	// end. timerGen tells a firing that has already been rescheduled or
+	// cancelled apart from a live one.
+	timerLock sync.Mutex
+	timer     *time.Timer
+	timerGen  uint64
 }
 
 func NewDLNAPlayer(device *device.MediaRenderer, coverArtPathFn func(coverArtID string) (string, error)) (*DLNAPlayer, error) {
@@ -133,7 +136,6 @@ func NewDLNAPlayer(device *device.MediaRenderer, coverArtPathFn func(coverArtID 
 	return &DLNAPlayer{
 		avTransport:    avt,
 		renderControl:  rc,
-		resetChan:      make(chan time.Duration),
 		coverArtPathFn: coverArtPathFn,
 	}, nil
 }
@@ -530,49 +532,41 @@ func (d *DLNAPlayer) ensureSetupProxy() error {
 	return nil
 }
 
+// setTrackChangeTimer schedules the switch to the next track for when the
+// current one is due to end, replacing any switch already scheduled. A
+// duration of zero only cancels, which is also what a track of unknown
+// length wants; a negative one is due now.
 func (d *DLNAPlayer) setTrackChangeTimer(dur time.Duration) {
-	if d.timerActive.Swap(true) {
-		// was active
-		d.resetChan <- dur
-		return
+	d.timerLock.Lock()
+	defer d.timerLock.Unlock()
+
+	if d.timer != nil {
+		d.timer.Stop()
+		d.timer = nil
 	}
+	d.timerGen++
 	if dur == 0 {
-		d.timerActive.Store(false)
 		return
 	}
 
-	d.timer = time.NewTimer(dur)
-	go func() {
-		for {
-			select {
-			case dur := <-d.resetChan:
-				if dur == 0 {
-					d.timerActive.Store(false)
-					if !d.timer.Stop() {
-						select {
-						case <-d.timer.C:
-						default:
-						}
-					}
-					d.timer = nil
-					return
-				}
-				// reset the timer
-				if !d.timer.Stop() {
-					select {
-					case <-d.timer.C:
-					default:
-					}
-				}
-				d.timer.Reset(dur)
-			case <-d.timer.C:
-				d.timerActive.Store(false)
-				d.timer = nil
-				d.handleOnTrackChange()
-				return
-			}
-		}
-	}()
+	gen := d.timerGen
+	d.timer = time.AfterFunc(dur, func() { d.trackChangeTimerFired(gen) })
+}
+
+// trackChangeTimerFired is the track change timer's callback. A firing
+// that lost the race with a reschedule or a cancel - a pause landing just
+// as the track ends - is no longer wanted, and is told apart by the
+// generation it was scheduled with.
+func (d *DLNAPlayer) trackChangeTimerFired(gen uint64) {
+	d.timerLock.Lock()
+	live := gen == d.timerGen
+	if live {
+		d.timer = nil
+	}
+	d.timerLock.Unlock()
+	if live {
+		d.handleOnTrackChange()
+	}
 }
 
 func (d *DLNAPlayer) handleOnTrackChange() {
