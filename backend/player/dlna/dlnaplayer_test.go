@@ -1,6 +1,9 @@
 package dlna
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -56,6 +59,56 @@ func TestProxyEvictsLeastRecentlyUsed(t *testing.T) {
 	}
 	if _, ok := d.lookupProxyURL(oldest); ok {
 		t.Error("expected the least recently used entry to be evicted")
+	}
+}
+
+func TestParseClockTime(t *testing.T) {
+	cases := []struct {
+		in   string
+		want time.Duration
+		ok   bool
+	}{
+		{"0:02:35", 2*time.Minute + 35*time.Second, true}, // Sonos does not pad the hours
+		{"00:02:35", 2*time.Minute + 35*time.Second, true},
+		{"1:00:07.500", time.Hour + 7*time.Second, true},
+		{"0:00:00", 0, true},
+		{"NOT_IMPLEMENTED", 0, false},
+		{"02:35", 0, false},
+		{"", 0, false},
+		{"0:-1:00", 0, false},
+	}
+	for _, c := range cases {
+		got, err := parseClockTime(c.in)
+		if (err == nil) != c.ok {
+			t.Errorf("parseClockTime(%q) error = %v, want ok=%v", c.in, err, c.ok)
+		} else if got != c.want {
+			t.Errorf("parseClockTime(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// A GetPositionInfo response as a Sonos player sends it.
+const sonosPositionInfo = `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetPositionInfoResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><Track>1</Track><TrackDuration>0:03:24</TrackDuration><TrackMetaData></TrackMetaData><TrackURI>http://192.168.1.237:39889/0JujwzEvS9dUT/U27Cr4xw==</TrackURI><RelTime>0:02:35</RelTime><AbsTime>NOT_IMPLEMENTED</AbsTime><RelCount>2147483647</RelCount><AbsCount>2147483647</AbsCount></u:GetPositionInfoResponse></s:Body></s:Envelope>`
+
+func TestPositionInfo(t *testing.T) {
+	var action string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		action = r.Header.Get("SOAPAction")
+		w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
+		w.Write([]byte(sonosPositionInfo))
+	}))
+	defer srv.Close()
+
+	d := &DLNAPlayer{avtRequests: &httpClientHandler{client: srv.Client(), controlURL: srv.URL + "/MediaRenderer/AVTransport/Control"}}
+	pos, err := d.positionInfo(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 2*time.Minute + 35*time.Second; pos != want {
+		t.Errorf("position = %v, want %v", pos, want)
+	}
+	if want := `"urn:schemas-upnp-org:service:AVTransport:1#GetPositionInfo"`; action != want {
+		t.Errorf("SOAPAction = %s, want %s", action, want)
 	}
 }
 

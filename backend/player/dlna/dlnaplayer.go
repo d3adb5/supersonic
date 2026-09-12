@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/base64"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +37,17 @@ const (
 // AVTransport state reported by a device that is still loading media
 const transitioning = "TRANSITIONING"
 
+const (
+	avTransportServiceType = "urn:schemas-upnp-org:service:AVTransport:1"
+
+	getPositionInfoBody = `<?xml version="1.0" encoding="utf-8"?>` +
+		`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"` +
+		` s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>` +
+		`<u:GetPositionInfo xmlns:u="` + avTransportServiceType + `">` +
+		`<InstanceID>0</InstanceID></u:GetPositionInfo>` +
+		`</s:Body></s:Envelope>`
+)
+
 type proxyMapEntry struct {
 	key string
 	url string
@@ -47,6 +60,7 @@ type DLNAPlayer struct {
 	cancelRequest context.CancelFunc
 
 	avTransport   *avtransport.Client
+	avtRequests   *httpClientHandler
 	renderControl *renderingcontrol.Client
 
 	// coverArtPathFn returns a local filesystem path to the cached cover
@@ -115,7 +129,8 @@ func NewDLNAPlayer(device *device.MediaRenderer, coverArtPathFn func(coverArtID 
 	if err != nil {
 		return nil, err
 	}
-	avt.RequestHandler = httpClientHandler{cli}
+	avtRequests := &httpClientHandler{client: cli}
+	avt.RequestHandler = avtRequests
 	rc, err := device.RenderingControlClient()
 	if err != nil {
 		return nil, err
@@ -135,6 +150,7 @@ func NewDLNAPlayer(device *device.MediaRenderer, coverArtPathFn func(coverArtID 
 
 	return &DLNAPlayer{
 		avTransport:    avt,
+		avtRequests:    avtRequests,
 		renderControl:  rc,
 		coverArtPathFn: coverArtPathFn,
 	}, nil
@@ -212,6 +228,7 @@ func (d *DLNAPlayer) PlayFile(urlstr string, meta mediaprovider.MediaItemMetadat
 	if err := d.playAVTransportMedia(&media); err != nil {
 		return err
 	}
+	d.state = playing
 	d.pendingPlayStart = true
 	if startTime > 0 {
 		d.awaitPlaybackStart()
@@ -228,7 +245,6 @@ func (d *DLNAPlayer) PlayFile(urlstr string, meta mediaprovider.MediaItemMetadat
 			d.pendingPlayStart = false
 		}()
 	}
-	d.state = playing
 	remainingDur := meta.Duration - time.Duration(startTime)*time.Second
 	d.setTrackChangeTimer(remainingDur)
 	d.stopwatch.Reset()
@@ -494,17 +510,93 @@ func (d *DLNAPlayer) Destroy() {
 	}
 }
 
+// syncPlaybackTime aligns the local clock with the position the renderer
+// reports. The clock only drifts while playing, and re-arming the track
+// change timer for a paused or stopped player would have it switch tracks
+// on its own, so a sync that finds the player in any other state is
+// dropped.
 func (d *DLNAPlayer) syncPlaybackTime() {
-	start := time.Now()
-	if pos, err := d.avTransport.GetPositionInfo(context.Background()); err == nil {
-		d.lastStartTime = int(pos.RelTime.Seconds() + (time.Since(start) / 2).Seconds())
-		d.stopwatch.Reset()
-		if d.state == playing {
-			d.stopwatch.Start()
-		}
-		d.setTrackChangeTimer(d.curTrackMeta.Duration - time.Duration(d.lastStartTime)*time.Second)
-		d.InvokeOnSeek()
+	if d.state != playing {
+		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	pos, err := d.positionInfo(ctx)
+	if err != nil || d.state != playing {
+		return
+	}
+	d.lastStartTime = int((pos + time.Since(start)/2).Seconds())
+	d.stopwatch.Reset()
+	d.stopwatch.Start()
+
+	d.metaLock.Lock()
+	duration := d.curTrackMeta.Duration
+	d.metaLock.Unlock()
+	if duration > 0 {
+		// zero would cancel the timer, but a renderer already at the end
+		// of the track is about to change
+		remaining := duration - time.Duration(d.lastStartTime)*time.Second
+		d.setTrackChangeTimer(max(remaining, time.Millisecond))
+	}
+	d.InvokeOnSeek()
+}
+
+// positionInfo asks the renderer how far into the current track it is.
+//
+// go-upnpcast has a GetPositionInfo, but it cannot parse the clock values
+// any renderer returns (it maps the number of colons to the format off by
+// one), so the query has to be made here.
+func (d *DLNAPlayer) positionInfo(ctx context.Context) (time.Duration, error) {
+	controlURL := d.avtRequests.controlURL
+	if controlURL == "" {
+		return 0, errors.New("AVTransport control URL not known yet")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlURL,
+		strings.NewReader(getPositionInfoBody))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", `text/xml; charset="utf-8"`)
+	req.Header.Set("SOAPAction", `"`+avTransportServiceType+`#GetPositionInfo"`)
+	req.Header.Set("Connection", "close")
+
+	resp, err := d.avtRequests.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("GetPositionInfo returned %s", resp.Status)
+	}
+
+	var envelope struct {
+		RelTime string `xml:"Body>GetPositionInfoResponse>RelTime"`
+	}
+	if err := xml.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return 0, err
+	}
+	return parseClockTime(envelope.RelTime)
+}
+
+// parseClockTime parses the H:MM:SS form AVTransport reports positions
+// in. The hours are not zero-padded by every renderer (Sonos reports
+// 0:02:35), and a fraction of a second may follow, which is dropped since
+// the clock is only kept to the second anyway.
+func parseClockTime(s string) (time.Duration, error) {
+	parts := strings.Split(s, ":")
+	if len(parts) != 3 {
+		return 0, fmt.Errorf("invalid clock time %q", s)
+	}
+	secs, _, _ := strings.Cut(parts[2], ".")
+	h, errH := strconv.Atoi(parts[0])
+	m, errM := strconv.Atoi(parts[1])
+	sec, errS := strconv.Atoi(secs)
+	if errH != nil || errM != nil || errS != nil || h < 0 || m < 0 || sec < 0 {
+		return 0, fmt.Errorf("invalid clock time %q", s)
+	}
+	return time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(sec)*time.Second, nil
 }
 
 func (d *DLNAPlayer) ensureSetupProxy() error {
@@ -744,12 +836,19 @@ func (t lengthedBodyTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return t.RoundTripper.RoundTrip(req)
 }
 
-// httpClientHandler wraps an http.Client to implement services.RequestHandler
+// httpClientHandler wraps an http.Client to implement services.RequestHandler.
+// It also notes the AVTransport control URL the requests are addressed to,
+// which go-upnpcast does not expose and positionInfo needs. NewDLNAPlayer
+// pings the renderer through it, so the URL is known before any playback.
 type httpClientHandler struct {
-	client *http.Client
+	client     *http.Client
+	controlURL string
 }
 
-func (h httpClientHandler) Do(req *http.Request) (*http.Response, error) {
+func (h *httpClientHandler) Do(req *http.Request) (*http.Response, error) {
+	if h.controlURL == "" {
+		h.controlURL = req.URL.String()
+	}
 	return h.client.Do(req)
 }
 
