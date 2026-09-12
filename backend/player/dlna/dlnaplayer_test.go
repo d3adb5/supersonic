@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,5 +172,27 @@ func TestTrackChangeTimerFiringLosesToCancel(t *testing.T) {
 	case <-fired:
 		t.Fatal("a cancelled firing still changed the track")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// A renderer that accepts a control request and never answers it must not
+// hang the caller: the request has to be given up, retries included.
+func TestControlRequestGivesUpOnSilentRenderer(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release) // let the handler finish before the server is closed
+
+	cli := newControlClient(100 * time.Millisecond)
+	start := time.Now()
+	resp, err := cli.Post(srv.URL, "text/xml", strings.NewReader("<s:Envelope/>"))
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("a request the renderer never answered succeeded")
+	}
+	if waited := time.Since(start); waited > 2*time.Second {
+		t.Errorf("gave up after %v, want about 100ms", waited)
 	}
 }

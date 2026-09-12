@@ -37,6 +37,10 @@ const (
 // AVTransport state reported by a device that is still loading media
 const transitioning = "TRANSITIONING"
 
+// controlRequestTimeout bounds a control request to the renderer as a
+// whole, retries included.
+const controlRequestTimeout = 10 * time.Second
+
 const (
 	avTransportServiceType = "urn:schemas-upnp-org:service:AVTransport:1"
 
@@ -118,12 +122,7 @@ type DLNAPlayer struct {
 }
 
 func NewDLNAPlayer(device *device.MediaRenderer, coverArtPathFn func(coverArtID string) (string, error)) (*DLNAPlayer, error) {
-	retry := retryablehttp.NewClient()
-	retry.RetryMax = 3
-	retry.RetryWaitMin = 100 * time.Millisecond
-	retry.Logger = retryLogger{}
-	retry.HTTPClient.Transport = lengthedBodyTransport{retry.HTTPClient.Transport}
-	cli := retry.StandardClient()
+	cli := newControlClient(controlRequestTimeout)
 
 	avt, err := device.AVTransportClient()
 	if err != nil {
@@ -804,6 +803,27 @@ func (d *DLNAPlayer) _updateProxyURL(key, url string) {
 	copy(d.proxyURLs[:], d.proxyURLs[1:])
 	// Insert new element at the most recent position
 	d.proxyURLs[len(d.proxyURLs)-1] = proxyMapEntry{key: key, url: url}
+}
+
+// newControlClient returns the client control requests are sent with. It
+// retries transient failures, sends bodies with a Content-Length, and
+// gives up on a request that has taken longer than timeout, retries
+// included. A renderer that stops answering - Sonos does that for
+// requests it dislikes rather than reject them - would otherwise hang
+// the caller, and the command queue behind it, for good.
+func newControlClient(timeout time.Duration) *http.Client {
+	retry := retryablehttp.NewClient()
+	retry.RetryMax = 3
+	retry.RetryWaitMin = 100 * time.Millisecond
+	retry.Logger = retryLogger{}
+	retry.HTTPClient.Transport = lengthedBodyTransport{retry.HTTPClient.Transport}
+
+	// The timeout goes on the outer client so that it wraps the retrying
+	// round tripper: it becomes a deadline on the request's context,
+	// which ends the retry loop as well as the attempt in flight.
+	cli := retry.StandardClient()
+	cli.Timeout = timeout
+	return cli
 }
 
 // lengthedBodyTransport buffers request bodies of unknown length so that
