@@ -1,8 +1,6 @@
 package widgets
 
 import (
-	"fmt"
-
 	"github.com/supersonic-app/supersonic/backend"
 	myTheme "github.com/supersonic-app/supersonic/ui/theme"
 	"github.com/supersonic-app/supersonic/ui/util"
@@ -92,6 +90,7 @@ type PlayerControls struct {
 	OnChangeShuffle func(shuffle bool)
 	OnSlowDown      func()
 	OnSpeedUp       func()
+	OnResetSpeed    func()
 
 	slider         *TrackPosSlider
 	waveform       *WaveformSeekbar
@@ -104,6 +103,7 @@ type PlayerControls struct {
 	loop           *IconButton
 	slower         *IconButton
 	faster         *IconButton
+	speedLabel     *SpeedLabel
 	container      *fyne.Container
 
 	totalTime float64
@@ -166,19 +166,24 @@ func NewPlayerControls(useWaveformSeekbar bool, initialLoopMode backend.LoopMode
 	pc.loop.IconSize = IconButtonSizeSmallest
 	pc.loop.SetToolTip(lang.L("Repeat"))
 
-	pc.slower = NewIconButton(theme.MediaFastRewindIcon(), func() {
+	pc.slower = NewIconButton(theme.ContentRemoveIcon(), func() {
 		if pc.OnSlowDown != nil {
 			pc.OnSlowDown()
 		}
 	})
 	pc.slower.IconSize = IconButtonSizeSmallest
-	pc.faster = NewIconButton(theme.MediaFastForwardIcon(), func() {
+	pc.faster = NewIconButton(theme.ContentAddIcon(), func() {
 		if pc.OnSpeedUp != nil {
 			pc.OnSpeedUp()
 		}
 	})
 	pc.faster.IconSize = IconButtonSizeSmallest
-	pc.SetSpeed(1)
+	pc.speedLabel = NewSpeedLabel(1)
+	pc.speedLabel.OnTapped = func() {
+		if pc.OnResetSpeed != nil {
+			pc.OnResetSpeed()
+		}
+	}
 
 	pc.shuffle.Highlighted = initialShuffle
 	pc.SetLoopMode(initialLoopMode)
@@ -193,10 +198,15 @@ func NewPlayerControls(useWaveformSeekbar bool, initialLoopMode backend.LoopMode
 	pc.playpause.SetToolTip(lang.L("Play"))
 	pc.playpause.IconSize = IconButtonSizeBigger
 
+	speedCtrl := container.New(layout.NewCustomPaddedHBoxLayout(0), pc.slower, pc.speedLabel, pc.faster)
+	speedGap := theme.Padding() * 2
+	// invisible counterweight to the speed controls so the transport buttons stay centered
+	speedBalance := util.NewHSpace(speedCtrl.MinSize().Width + speedGap)
+
 	buttons := container.NewHBox(layout.NewSpacer(),
-		pc.slower, pc.shuffle, util.NewHSpace(2),
+		speedBalance, pc.shuffle, util.NewHSpace(2),
 		pc.prev, pc.playpause, pc.next,
-		util.NewHSpace(2), pc.loop, pc.faster,
+		util.NewHSpace(2), pc.loop, util.NewHSpace(speedGap), speedCtrl,
 		layout.NewSpacer())
 
 	seekCtrl := container.NewStack(
@@ -250,30 +260,20 @@ func (pc *PlayerControls) SetShuffle(isShuffle bool) {
 	pc.shuffle.Refresh()
 }
 
-// SetSpeed updates the speed buttons to reflect the current playback speed.
-// The buttons are highlighted whenever the speed is not the normal 1x.
+// SetSpeed updates the speed display to reflect the current playback speed.
 func (pc *PlayerControls) SetSpeed(speed float64) {
-	speedStr := fmt.Sprintf("%.2fx", speed)
-	pc.slower.SetToolTip(fmt.Sprintf("%s (%s)", lang.L("Slow down"), speedStr))
-	pc.faster.SetToolTip(fmt.Sprintf("%s (%s)", lang.L("Speed up"), speedStr))
-	highlight := speedStr != "1.00x"
-	if pc.slower.Highlighted != highlight {
-		pc.slower.Highlighted = highlight
-		pc.faster.Highlighted = highlight
-		pc.slower.Refresh()
-		pc.faster.Refresh()
-	}
+	pc.speedLabel.SetSpeed(speed)
 }
 
-// SetSpeedControlsEnabled enables or disables the speed buttons,
+// SetSpeedControlsEnabled enables or disables the speed controls,
 // e.g. when the current player does not support changing speed.
 func (pc *PlayerControls) SetSpeedControlsEnabled(enabled bool) {
-	if enabled {
-		pc.slower.Enable()
-		pc.faster.Enable()
-	} else {
-		pc.slower.Disable()
-		pc.faster.Disable()
+	for _, w := range []fyne.Disableable{pc.slower, pc.speedLabel, pc.faster} {
+		if enabled {
+			w.Enable()
+		} else {
+			w.Disable()
+		}
 	}
 }
 

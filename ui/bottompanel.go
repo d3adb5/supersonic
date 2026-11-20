@@ -112,6 +112,7 @@ func NewBottomPanel(pm *backend.PlaybackManager, im *backend.ImageManager, contr
 	}
 	bp.Controls.OnSlowDown = pm.SlowDown
 	bp.Controls.OnSpeedUp = pm.SpeedUp
+	bp.Controls.OnResetSpeed = func() { pm.SetSpeed(1) }
 	bp.Controls.SetSpeed(pm.Speed())
 	bp.Controls.SetSpeedControlsEnabled(pm.CanChangeSpeed())
 	pm.OnSpeedChange(func(speed float64) {
