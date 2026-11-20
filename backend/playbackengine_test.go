@@ -153,3 +153,55 @@ func TestNormalizeSpeed(t *testing.T) {
 		}
 	}
 }
+
+type fakeSpeedPlayer struct {
+	fakeURLPlayer
+	speed float64
+}
+
+func (f *fakeSpeedPlayer) SetSpeed(s float64) error {
+	f.speed = s
+	return nil
+}
+
+// The speed carries over between tracks of the same queue,
+// but replacing the queue starts it over at normal speed.
+func TestSpeedResetsOnNewQueue(t *testing.T) {
+	p := &fakeSpeedPlayer{speed: 1}
+	e := newTestEngine(t, p)
+	var notified []float64
+	e.onSpeedChange = append(e.onSpeedChange, func(s float64) { notified = append(notified, s) })
+
+	if err := e.PlayTrackAt(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.ChangeSpeedBy(3); err != nil {
+		t.Fatal(err)
+	}
+	if p.speed != 1.15 {
+		t.Fatalf("player speed %v, want 1.15", p.speed)
+	}
+
+	// next track in the same queue, and appending to it, keep the speed
+	if err := e.SeekNext(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.LoadItems([]mediaprovider.MediaItem{&mediaprovider.Track{ID: "c"}}, Append, false); err != nil {
+		t.Fatal(err)
+	}
+	if e.Speed() != 1.15 || p.speed != 1.15 {
+		t.Fatalf("after next track: engine %v, player %v, want 1.15", e.Speed(), p.speed)
+	}
+
+	// playing a new album replaces the queue
+	album := []mediaprovider.MediaItem{&mediaprovider.Track{ID: "x"}, &mediaprovider.Track{ID: "y"}}
+	if err := e.LoadItemsAndPlayAtIdx(album, false, 1); err != nil {
+		t.Fatal(err)
+	}
+	if e.Speed() != 1 || p.speed != 1 {
+		t.Errorf("after new queue: engine %v, player %v, want 1", e.Speed(), p.speed)
+	}
+	if len(notified) != 2 || notified[1] != 1 {
+		t.Errorf("speed change notifications %v, want [1.15 1]", notified)
+	}
+}

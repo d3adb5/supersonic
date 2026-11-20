@@ -270,12 +270,8 @@ func (p *playbackEngine) SetPlayer(pl player.BasePlayer) error {
 		if err := p.SetSpeed(p.speed); err != nil {
 			log.Printf("failed to set playback speed on new player: %v", err)
 		}
-	} else if p.speed != 1 {
-		p.speed = 1
-		p.playTimeStopwatch.SetRate(1)
-		for _, cb := range p.onSpeedChange {
-			cb(1)
-		}
+	} else {
+		p.resetSpeed()
 	}
 	return nil
 }
@@ -308,6 +304,8 @@ func (p *playbackEngine) clearPlayQueue() {
 	p.nowPlayingIdx = -1
 	p.playQueue = nil
 	p.shuffledPlayQueue = nil
+	// a new queue always starts at normal speed
+	p.resetSpeed()
 }
 
 func (p *playbackEngine) setPlayQueue(items []mediaprovider.MediaItem) {
@@ -539,6 +537,24 @@ func (p *playbackEngine) SetSpeed(speed float64) error {
 		cb(speed)
 	}
 	return nil
+}
+
+// Returns playback to normal speed, if it isn't already.
+func (p *playbackEngine) resetSpeed() {
+	if p.speed == 1 {
+		return
+	}
+	if _, ok := p.player.(player.SpeedPlayer); ok {
+		if err := p.SetSpeed(1); err != nil {
+			log.Printf("failed to reset playback speed: %v", err)
+		}
+		return
+	}
+	p.speed = 1
+	p.playTimeStopwatch.SetRate(1)
+	for _, cb := range p.onSpeedChange {
+		cb(1)
+	}
 }
 
 // Changes the playback speed by n steps of SpeedStep (negative to slow down).
