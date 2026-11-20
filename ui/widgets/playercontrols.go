@@ -1,6 +1,8 @@
 package widgets
 
 import (
+	"fmt"
+
 	"github.com/supersonic-app/supersonic/backend"
 	myTheme "github.com/supersonic-app/supersonic/ui/theme"
 	"github.com/supersonic-app/supersonic/ui/util"
@@ -88,6 +90,8 @@ type PlayerControls struct {
 	UseWaveformSeekbar bool
 
 	OnChangeShuffle func(shuffle bool)
+	OnSlowDown      func()
+	OnSpeedUp       func()
 
 	slider         *TrackPosSlider
 	waveform       *WaveformSeekbar
@@ -98,6 +102,8 @@ type PlayerControls struct {
 	playpause      *IconButton
 	next           *IconButton
 	loop           *IconButton
+	slower         *IconButton
+	faster         *IconButton
 	container      *fyne.Container
 
 	totalTime float64
@@ -160,6 +166,20 @@ func NewPlayerControls(useWaveformSeekbar bool, initialLoopMode backend.LoopMode
 	pc.loop.IconSize = IconButtonSizeSmallest
 	pc.loop.SetToolTip(lang.L("Repeat"))
 
+	pc.slower = NewIconButton(theme.MediaFastRewindIcon(), func() {
+		if pc.OnSlowDown != nil {
+			pc.OnSlowDown()
+		}
+	})
+	pc.slower.IconSize = IconButtonSizeSmallest
+	pc.faster = NewIconButton(theme.MediaFastForwardIcon(), func() {
+		if pc.OnSpeedUp != nil {
+			pc.OnSpeedUp()
+		}
+	})
+	pc.faster.IconSize = IconButtonSizeSmallest
+	pc.SetSpeed(1)
+
 	pc.shuffle.Highlighted = initialShuffle
 	pc.SetLoopMode(initialLoopMode)
 
@@ -173,7 +193,11 @@ func NewPlayerControls(useWaveformSeekbar bool, initialLoopMode backend.LoopMode
 	pc.playpause.SetToolTip(lang.L("Play"))
 	pc.playpause.IconSize = IconButtonSizeBigger
 
-	buttons := container.NewHBox(layout.NewSpacer(), pc.shuffle, util.NewHSpace(2), pc.prev, pc.playpause, pc.next, util.NewHSpace(2), pc.loop, layout.NewSpacer())
+	buttons := container.NewHBox(layout.NewSpacer(),
+		pc.slower, pc.shuffle, util.NewHSpace(2),
+		pc.prev, pc.playpause, pc.next,
+		util.NewHSpace(2), pc.loop, pc.faster,
+		layout.NewSpacer())
 
 	seekCtrl := container.NewStack(
 		pc.slider,
@@ -224,6 +248,33 @@ func (pc *PlayerControls) SetShuffle(isShuffle bool) {
 	}
 	pc.shuffle.Highlighted = isShuffle
 	pc.shuffle.Refresh()
+}
+
+// SetSpeed updates the speed buttons to reflect the current playback speed.
+// The buttons are highlighted whenever the speed is not the normal 1x.
+func (pc *PlayerControls) SetSpeed(speed float64) {
+	speedStr := fmt.Sprintf("%.2fx", speed)
+	pc.slower.SetToolTip(fmt.Sprintf("%s (%s)", lang.L("Slow down"), speedStr))
+	pc.faster.SetToolTip(fmt.Sprintf("%s (%s)", lang.L("Speed up"), speedStr))
+	highlight := speedStr != "1.00x"
+	if pc.slower.Highlighted != highlight {
+		pc.slower.Highlighted = highlight
+		pc.faster.Highlighted = highlight
+		pc.slower.Refresh()
+		pc.faster.Refresh()
+	}
+}
+
+// SetSpeedControlsEnabled enables or disables the speed buttons,
+// e.g. when the current player does not support changing speed.
+func (pc *PlayerControls) SetSpeedControlsEnabled(enabled bool) {
+	if enabled {
+		pc.slower.Enable()
+		pc.faster.Enable()
+	} else {
+		pc.slower.Disable()
+		pc.faster.Disable()
+	}
 }
 
 func (pc *PlayerControls) OnSeekNext(f func()) {

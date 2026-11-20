@@ -43,6 +43,12 @@ type ReplayGainPlayer interface {
 	SetReplayGainOptions(ReplayGainOptions) error
 }
 
+// SpeedPlayer is implemented by players that can change the playback speed.
+type SpeedPlayer interface {
+	// Sets the playback speed as a multiplier of normal speed (1.0).
+	SetSpeed(float64) error
+}
+
 // The playback state (Stopped, Paused, or Playing).
 type State int
 

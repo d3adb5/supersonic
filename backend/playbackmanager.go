@@ -402,6 +402,11 @@ func (p *PlaybackManager) OnVolumeChange(cb func(int)) {
 }
 
 // Registers a callback that is notified whenever the play queue changes.
+// Registers a callback that is notified whenever the playback speed changes.
+func (p *PlaybackManager) OnSpeedChange(cb func(float64)) {
+	p.engine.onSpeedChange = append(p.engine.onSpeedChange, cb)
+}
+
 func (p *PlaybackManager) OnQueueChange(cb func()) {
 	p.engine.onQueueChange = append(p.engine.onQueueChange, cb)
 }
@@ -744,6 +749,32 @@ func (p *PlaybackManager) Volume() int {
 	return p.engine.CurrentPlayer().GetVolume()
 }
 
+// Sets the playback speed (1.0 is normal speed). The speed is rounded to
+// the nearest SpeedStep and clamped to [MinSpeed, MaxSpeed].
+func (p *PlaybackManager) SetSpeed(speed float64) {
+	p.cmdQueue.SetSpeed(speed)
+}
+
+// Speeds up playback by one SpeedStep.
+func (p *PlaybackManager) SpeedUp() {
+	p.cmdQueue.ChangeSpeedBy(1)
+}
+
+// Slows down playback by one SpeedStep.
+func (p *PlaybackManager) SlowDown() {
+	p.cmdQueue.ChangeSpeedBy(-1)
+}
+
+func (p *PlaybackManager) Speed() float64 {
+	return p.engine.Speed()
+}
+
+// Whether the current player supports changing the playback speed.
+func (p *PlaybackManager) CanChangeSpeed() bool {
+	_, ok := p.engine.CurrentPlayer().(player.SpeedPlayer)
+	return ok
+}
+
 func (p *PlaybackManager) SeekNext() {
 	p.cmdQueue.SeekNext()
 }
@@ -933,6 +964,10 @@ func (p *PlaybackManager) runCmdQueue(ctx context.Context) {
 				logIfErr(action, p.engine.SeekFwdBackN(c.Arg.(int)))
 			case cmdVolume:
 				logIfErr("Volume", p.engine.SetVolume(c.Arg.(int)))
+			case cmdSpeed:
+				logIfErr("Speed", p.engine.SetSpeed(c.Arg.(float64)))
+			case cmdChangeSpeedBy:
+				logIfErr("ChangeSpeedBy", p.engine.ChangeSpeedBy(c.Arg.(int)))
 			case cmdLoopMode:
 				p.engine.SetLoopMode(c.Arg.(LoopMode))
 			case cmdStopAndClearPlayQueue:

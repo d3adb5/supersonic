@@ -136,3 +136,20 @@ func TestPlayerChangeWhilePausedThenStop(t *testing.T) {
 		t.Error("a track is still reported as playing")
 	}
 }
+
+func TestNormalizeSpeed(t *testing.T) {
+	for _, tc := range []struct{ in, want float64 }{
+		{1, 1},
+		{1 + SpeedStep, 1.05},
+		{1 + 3*SpeedStep, 1.15},
+		{1 - 7*SpeedStep, 0.65},
+		{1.07, 1.05},
+		{1.08, 1.1},
+		{0.1, MinSpeed},
+		{10, MaxSpeed},
+	} {
+		if got := normalizeSpeed(tc.in); got != tc.want {
+			t.Errorf("normalizeSpeed(%v) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}

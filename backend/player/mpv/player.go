@@ -49,7 +49,10 @@ type MediaInfo struct {
 	Bitrate int
 }
 
-var _ player.URLPlayer = (*Player)(nil)
+var (
+	_ player.URLPlayer   = (*Player)(nil)
+	_ player.SpeedPlayer = (*Player)(nil)
+)
 
 // Player encapsulates the mpv instance and provides functions
 // to control it and to check its status.
@@ -59,6 +62,7 @@ type Player struct {
 	mpv            *mpv.Mpv
 	initialized    bool
 	vol            int
+	speed          float64
 	replayGainOpts player.ReplayGainOptions
 	haveRGainOpts  bool
 	audioExclusive bool
@@ -92,6 +96,7 @@ func New() *Player {
 func NewWithClientName(c string) *Player {
 	p := &Player{
 		vol:        -1, // use 100 in Init
+		speed:      1,
 		clientName: c,
 	}
 	p.fileLoadedSig = sync.NewCond(&p.fileLoadedLock)
@@ -122,6 +127,7 @@ func (p *Player) Init(maxCacheMB int) error {
 			p.vol = 100
 		}
 		m.SetOption("volume", mpv.FORMAT_INT64, p.vol)
+		m.SetOption("speed", mpv.FORMAT_DOUBLE, p.speed)
 
 		p.SetAudioExclusive(p.audioExclusive)
 		if p.haveRGainOpts {
@@ -246,6 +252,16 @@ func (p *Player) SetVolume(vol int) error {
 // Sets the ReplayGain options of the player.
 // Unlike most Player functions, SetReplayGainOptions can be called
 // before Init, to set the initial replaygain options of the player on startup.
+// Sets the playback speed as a multiplier of normal speed.
+// Pitch is preserved (mpv's audio-pitch-correction is on by default).
+func (p *Player) SetSpeed(speed float64) error {
+	p.speed = speed
+	if !p.initialized {
+		return nil
+	}
+	return p.mpv.SetProperty("speed", mpv.FORMAT_DOUBLE, speed)
+}
+
 func (p *Player) SetReplayGainOptions(options player.ReplayGainOptions) error {
 	p.replayGainOpts = options
 	p.haveRGainOpts = true

@@ -98,6 +98,11 @@ func NewMPRISHandler(playerName string, pm *PlaybackManager) *MPRISHandler {
 			m.evt.Player.OnVolume()
 		}
 	})
+	pm.OnSpeedChange(func(float64) {
+		if m.connErr == nil {
+			m.evt.Player.OnPlayback() // includes the Rate property
+		}
+	})
 	pm.OnLoopModeChange(func(loopMode LoopMode) {
 		if m.connErr == nil {
 			m.evt.Player.OnOptions()
@@ -280,11 +285,15 @@ func (m *MPRISHandler) SetShuffle(shuffle bool) error {
 }
 
 func (m *MPRISHandler) Rate() (float64, error) {
-	return 1, nil
+	return m.pm.Speed(), nil
 }
 
-func (m *MPRISHandler) SetRate(float64) error {
-	return errNotSupported
+func (m *MPRISHandler) SetRate(rate float64) error {
+	if !m.pm.CanChangeSpeed() {
+		return errNotSupported
+	}
+	m.pm.SetSpeed(rate)
+	return nil
 }
 
 func (m *MPRISHandler) Metadata() (types.Metadata, error) {
@@ -361,11 +370,11 @@ func (m *MPRISHandler) Position() (int64, error) {
 }
 
 func (m *MPRISHandler) MinimumRate() (float64, error) {
-	return 1, nil
+	return MinSpeed, nil
 }
 
 func (m *MPRISHandler) MaximumRate() (float64, error) {
-	return 1, nil
+	return MaxSpeed, nil
 }
 
 func (m *MPRISHandler) CanGoNext() (bool, error) {

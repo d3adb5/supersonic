@@ -8,11 +8,36 @@ import (
 // Stopwatch is a thread-safe timer for measuring elapsed time.
 // It can be started, stopped, and reset, and supports reading
 // the elapsed time while running or stopped.
+//
+// The rate at which time accumulates can be changed with SetRate,
+// e.g. to measure media time while playing at a speed other than 1x.
 type Stopwatch struct {
 	mu      sync.Mutex
 	running bool
 	started time.Time
 	elapsed time.Duration
+	rate    float64 // zero value means 1
+}
+
+func (s *Stopwatch) sinceStarted() time.Duration {
+	d := time.Since(s.started)
+	if s.rate > 0 {
+		d = time.Duration(float64(d) * s.rate)
+	}
+	return d
+}
+
+// SetRate changes the rate at which elapsed time accumulates from now on.
+// Time already accumulated is unaffected. A rate <= 0 resets it to 1.
+func (s *Stopwatch) SetRate(rate float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.running {
+		s.elapsed += s.sinceStarted()
+		s.started = time.Now()
+	}
+	s.rate = rate
 }
 
 // Start begins or resumes the stopwatch.
@@ -37,7 +62,7 @@ func (s *Stopwatch) Stop() {
 	if !s.running {
 		return
 	}
-	s.elapsed += time.Since(s.started)
+	s.elapsed += s.sinceStarted()
 	s.running = false
 }
 
@@ -50,7 +75,7 @@ func (s *Stopwatch) Elapsed() time.Duration {
 
 	e := s.elapsed
 	if s.running {
-		e += time.Since(s.started)
+		e += s.sinceStarted()
 	}
 	return e
 }

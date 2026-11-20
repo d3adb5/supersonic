@@ -110,6 +110,13 @@ func NewBottomPanel(pm *backend.PlaybackManager, im *backend.ImageManager, contr
 	bp.Controls.OnChangeShuffle = func(shuffle bool) {
 		pm.SetShuffle(shuffle)
 	}
+	bp.Controls.OnSlowDown = pm.SlowDown
+	bp.Controls.OnSpeedUp = pm.SpeedUp
+	bp.Controls.SetSpeed(pm.Speed())
+	bp.Controls.SetSpeedControlsEnabled(pm.CanChangeSpeed())
+	pm.OnSpeedChange(func(speed float64) {
+		fyne.Do(func() { bp.Controls.SetSpeed(speed) })
+	})
 	pm.OnLoopModeChange(func(lm backend.LoopMode) {
 		fyne.Do(func() { bp.Controls.SetLoopMode(lm) })
 	})
@@ -123,7 +130,11 @@ func NewBottomPanel(pm *backend.PlaybackManager, im *backend.ImageManager, contr
 	})
 	pm.OnPlayerChange(func() {
 		_, local := pm.CurrentPlayer().(*mpv.Player)
-		fyne.Do(func() { bp.AuxControls.SetIsRemotePlayer(!local) })
+		canChangeSpeed := pm.CanChangeSpeed()
+		fyne.Do(func() {
+			bp.AuxControls.SetIsRemotePlayer(!local)
+			bp.Controls.SetSpeedControlsEnabled(canChangeSpeed)
+		})
 	})
 	bp.AuxControls.VolumeControl.OnSetVolume = func(v int) {
 		pm.SetVolume(v)

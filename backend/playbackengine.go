@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"slices"
 	"strings"
@@ -24,6 +25,13 @@ var (
 	ReplayGainAlbum = player.ReplayGainAlbum.String()
 	ReplayGainTrack = player.ReplayGainTrack.String()
 	ReplayGainAuto  = "Auto"
+)
+
+// Playback speed limits and the increment used when speeding up or slowing down.
+const (
+	MinSpeed  = 0.25
+	MaxSpeed  = 4.0
+	SpeedStep = 0.05
 )
 
 type InsertQueueMode int
@@ -78,6 +86,7 @@ type playbackEngine struct {
 	isRadio       bool
 	loopMode      LoopMode
 	shuffle       bool
+	speed         float64
 
 	pauseAfterCurrent bool // flag to pause playback after current track ends
 
@@ -125,6 +134,7 @@ type playbackEngine struct {
 	onLoopModeChange  []func(LoopMode)
 	onShuffleChange   []func(bool)
 	onVolumeChange    []func(int)
+	onSpeedChange     []func(float64)
 	onSeek            []func()
 	onPaused          []func()
 	onStopped         []func()
@@ -155,6 +165,7 @@ func NewPlaybackEngine(
 		transcodeCfg:  transcodeCfg,
 		nowPlayingIdx: -1,
 		wasStopped:    true,
+		speed:         1,
 	}
 	switch playbackCfg.RepeatMode {
 	case "All":
@@ -250,6 +261,20 @@ func (p *playbackEngine) SetPlayer(pl player.BasePlayer) error {
 	if oldVol != vol {
 		for _, cb := range p.onVolumeChange {
 			cb(vol)
+		}
+	}
+
+	// Carry the speed over to the new player if it supports it,
+	// otherwise fall back to normal speed.
+	if _, ok := pl.(player.SpeedPlayer); ok {
+		if err := p.SetSpeed(p.speed); err != nil {
+			log.Printf("failed to set playback speed on new player: %v", err)
+		}
+	} else if p.speed != 1 {
+		p.speed = 1
+		p.playTimeStopwatch.SetRate(1)
+		for _, cb := range p.onSpeedChange {
+			cb(1)
 		}
 	}
 	return nil
@@ -488,6 +513,41 @@ func (p *playbackEngine) SetVolume(vol int) error {
 		cb(vol)
 	}
 	return nil
+}
+
+// Rounds speed to the nearest SpeedStep and clamps it to [MinSpeed, MaxSpeed].
+func normalizeSpeed(speed float64) float64 {
+	speed = math.Round(speed/SpeedStep) * SpeedStep
+	// re-round to two decimals to avoid floating point artifacts like 1.1500000000000001
+	speed = math.Round(speed*100) / 100
+	return math.Max(MinSpeed, math.Min(MaxSpeed, speed))
+}
+
+func (p *playbackEngine) SetSpeed(speed float64) error {
+	speedPlayer, ok := p.player.(player.SpeedPlayer)
+	if !ok {
+		return errors.New("player doesn't support changing playback speed")
+	}
+	speed = normalizeSpeed(speed)
+	if err := speedPlayer.SetSpeed(speed); err != nil {
+		return err
+	}
+	p.speed = speed
+	// so scrobble thresholds are measured in track time rather than wall time
+	p.playTimeStopwatch.SetRate(speed)
+	for _, cb := range p.onSpeedChange {
+		cb(speed)
+	}
+	return nil
+}
+
+// Changes the playback speed by n steps of SpeedStep (negative to slow down).
+func (p *playbackEngine) ChangeSpeedBy(n int) error {
+	return p.SetSpeed(p.speed + float64(n)*SpeedStep)
+}
+
+func (p *playbackEngine) Speed() float64 {
+	return p.speed
 }
 
 func (p *playbackEngine) CurrentPlayer() player.BasePlayer {

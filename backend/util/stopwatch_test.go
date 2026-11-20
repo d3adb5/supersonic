@@ -165,3 +165,26 @@ func TestStopwatch_Reset(t *testing.T) {
 		t.Errorf("Expected at least 5ms after reset and start, got %v", elapsed)
 	}
 }
+
+func TestStopwatch_SetRate(t *testing.T) {
+	sw := &Stopwatch{}
+
+	sw.SetRate(2)
+	sw.Start()
+	time.Sleep(20 * time.Millisecond)
+	if elapsed := sw.Elapsed(); elapsed < 40*time.Millisecond {
+		t.Errorf("Expected at least 40ms at 2x rate, got %v", elapsed)
+	}
+
+	// changing rate while running keeps what was already accumulated
+	sw.SetRate(0.5)
+	wallStart := time.Now()
+	before := sw.Elapsed()
+	time.Sleep(20 * time.Millisecond)
+	sw.Stop()
+	wall := time.Since(wallStart)
+	gained := sw.Elapsed() - before
+	if gained < 10*time.Millisecond || gained > wall/2+time.Millisecond {
+		t.Errorf("Expected between 10ms and %v gained at 0.5x rate, got %v", wall/2, gained)
+	}
+}

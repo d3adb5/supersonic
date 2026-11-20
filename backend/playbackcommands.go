@@ -32,6 +32,9 @@ const (
 	cmdForceRestartPlayback
 
 	cmdLoadTrackPaused // arg: int (idx), arg2: float64 (startTime)
+
+	cmdSpeed         // arg: float64
+	cmdChangeSpeedBy // arg: int (number of speed steps)
 )
 
 type playbackCommand struct {
@@ -106,6 +109,16 @@ func (c *playbackCommandQueue) StopAndClearPlayQueue() {
 func (c *playbackCommandQueue) SetVolume(vol int) {
 	c.filterCommandsAndAdd([]playbackCommandType{cmdVolume},
 		playbackCommand{Type: cmdVolume, Arg: vol})
+}
+
+func (c *playbackCommandQueue) SetSpeed(speed float64) {
+	// an absolute speed overrides any pending speed changes
+	c.filterCommandsAndAdd([]playbackCommandType{cmdSpeed, cmdChangeSpeedBy},
+		playbackCommand{Type: cmdSpeed, Arg: speed})
+}
+
+func (c *playbackCommandQueue) ChangeSpeedBy(n int) {
+	c.addCommand(playbackCommand{Type: cmdChangeSpeedBy, Arg: n})
 }
 
 func (c *playbackCommandQueue) SetLoopMode(mode LoopMode) {
